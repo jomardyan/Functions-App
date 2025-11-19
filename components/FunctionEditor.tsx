@@ -20,13 +20,14 @@ import {
 import { ServerlessFunction, FunctionStatus, Runtime, LogEntry, InvocationResult, Binding } from '../types';
 import { generateFunctionCode, analyzeErrorLog } from '../services/geminiService';
 import { PlatformService } from '../services/platform';
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts';
 
 interface Props {
   func: ServerlessFunction;
   onSave: (updated: ServerlessFunction) => void;
 }
 
-const TABS = ['Code', 'Configuration', 'Bindings', 'Test'];
+const TABS = ['Code', 'Configuration', 'Bindings', 'Metrics', 'Test'];
 
 export const FunctionEditor: React.FC<Props> = ({ func, onSave }) => {
   const [activeTab, setActiveTab] = useState('Code');
@@ -47,6 +48,7 @@ export const FunctionEditor: React.FC<Props> = ({ func, onSave }) => {
     const [testAuthHeader, setTestAuthHeader] = useState<string>('');
     const [logFilter, setLogFilter] = useState<'ALL' | 'INFO' | 'WARN' | 'ERROR' | 'DEBUG'>('ALL');
     const [logSearch, setLogSearch] = useState<string>('');
+    const [functionMetrics, setFunctionMetrics] = useState<any[]>([]);
   
   // Config state
   const [showSecret, setShowSecret] = useState<Record<string, boolean>>({});
@@ -63,6 +65,32 @@ export const FunctionEditor: React.FC<Props> = ({ func, onSave }) => {
       const fetchedLogs = await PlatformService.getLogs(func.id);
       setLogs(fetchedLogs);
       setBindingOps(fetchedLogs.filter(l => l.message && (l.message.includes('Output binding') || l.message.includes('Output binding wrote') || l.message.includes('No binding injected'))));
+      
+      // Calculate metrics from logs
+      const hourlyMetrics: Record<string, { invocations: number; errors: number; totalLatency: number; count: number }> = {};
+      for (const log of fetchedLogs) {
+        const hour = new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        if (!hourlyMetrics[hour]) {
+          hourlyMetrics[hour] = { invocations: 0, errors: 0, totalLatency: 0, count: 0 };
+        }
+        if (log.level === 'REPORT') {
+          hourlyMetrics[hour].invocations += 1;
+          if (log.duration) {
+            hourlyMetrics[hour].totalLatency += log.duration;
+            hourlyMetrics[hour].count += 1;
+          }
+        } else if (log.level === 'ERROR') {
+          hourlyMetrics[hour].errors += 1;
+        }
+      }
+      
+      const metricsData = Object.entries(hourlyMetrics).map(([time, data]) => ({
+        time,
+        invocations: data.invocations,
+        errors: data.errors,
+        latency: data.count > 0 ? Math.round(data.totalLatency / data.count) : 0
+      }));
+      setFunctionMetrics(metricsData);
   };
 
     const fetchRateLimit = async () => {
@@ -584,6 +612,81 @@ export const FunctionEditor: React.FC<Props> = ({ func, onSave }) => {
                     >
                         Save Bindings
                     </button>
+                </div>
+            )}
+
+            {activeTab === 'Metrics' && (
+                <div className="p-8 h-full flex flex-col space-y-6">
+                    <div>
+                        <h3 className="text-white font-medium mb-2">Invocation Volume</h3>
+                        <div className="bg-slate-950 border border-slate-800 rounded p-4 h-64">
+                            {functionMetrics.length > 0 ? (
+                                <ResponsiveContainer width="100%" height="100%">
+                                    <AreaChart data={functionMetrics}>
+                                        <defs>
+                                            <linearGradient id="colorInv" x1="0" y1="0" x2="0" y2="1">
+                                                <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
+                                                <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
+                                            </linearGradient>
+                                        </defs>
+                                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
+                                        <XAxis dataKey="time" stroke="#94a3b8" fontSize={10} tickLine={false} axisLine={false} />
+                                        <YAxis stroke="#94a3b8" fontSize={10} tickLine={false} axisLine={false} />
+                                        <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#1e293b', color: '#f8fafc' }} />
+                                        <Area type="monotone" dataKey="invocations" stroke="#3b82f6" strokeWidth={2} fillOpacity={1} fill="url(#colorInv)" />
+                                    </AreaChart>
+                                </ResponsiveContainer>
+                            ) : (
+                                <div className="flex items-center justify-center h-full text-slate-500 text-sm">No invocation data yet</div>
+                            )}
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-6">
+                        <div>
+                            <h3 className="text-white font-medium mb-2">Error Rate</h3>
+                            <div className="bg-slate-950 border border-slate-800 rounded p-4 h-48">
+                                {functionMetrics.length > 0 ? (
+                                    <ResponsiveContainer width="100%" height="100%">
+                                        <BarChart data={functionMetrics}>
+                                            <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
+                                            <XAxis dataKey="time" stroke="#94a3b8" fontSize={10} tickLine={false} axisLine={false} />
+                                            <YAxis stroke="#94a3b8" fontSize={10} tickLine={false} axisLine={false} />
+                                            <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#1e293b', color: '#f8fafc' }} />
+                                            <Bar dataKey="errors" fill="#ef4444" radius={[4, 4, 0, 0]} />
+                                        </BarChart>
+                                    </ResponsiveContainer>
+                                ) : (
+                                    <div className="flex items-center justify-center h-full text-slate-500 text-sm">No error data yet</div>
+                                )}
+                            </div>
+                        </div>
+
+                        <div>
+                            <h3 className="text-white font-medium mb-2">Avg Latency (ms)</h3>
+                            <div className="bg-slate-950 border border-slate-800 rounded p-4 h-48">
+                                {functionMetrics.length > 0 ? (
+                                    <ResponsiveContainer width="100%" height="100%">
+                                        <AreaChart data={functionMetrics}>
+                                            <defs>
+                                                <linearGradient id="colorLat" x1="0" y1="0" x2="0" y2="1">
+                                                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
+                                                    <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                                                </linearGradient>
+                                            </defs>
+                                            <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
+                                            <XAxis dataKey="time" stroke="#94a3b8" fontSize={10} tickLine={false} axisLine={false} />
+                                            <YAxis stroke="#94a3b8" fontSize={10} tickLine={false} axisLine={false} />
+                                            <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#1e293b', color: '#f8fafc' }} />
+                                            <Area type="monotone" dataKey="latency" stroke="#10b981" strokeWidth={2} fillOpacity={1} fill="url(#colorLat)" />
+                                        </AreaChart>
+                                    </ResponsiveContainer>
+                                ) : (
+                                    <div className="flex items-center justify-center h-full text-slate-500 text-sm">No latency data yet</div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
                 </div>
             )}
 

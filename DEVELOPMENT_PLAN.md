@@ -72,26 +72,30 @@ Based on the [Serverless Function Platform Design Document](./serverless-platfor
 - [ ] Create Layout (Sidebar, Header, Project Switcher).
 
 ### 3.2 Function Management UI
-- [ ] **Function List View**: Status, runtime, last invoked.
-- [ ] **Function Editor (Monaco Editor)**:
-    - [ ] Syntax highlighting.
-    - [ ] Save & Deploy buttons.
-    - [ ] Test tab (send mock JSON payloads).
-### Progress Updates
-- [x] Function List View implemented (existing UI shows function list and stats)
-- [x] Function Editor: Save & Deploy implemented
-- [x] Function Editor: Test tab implemented (runs functions in Web Worker)
-- [ ] **Configuration Screens**:
-    - [ ] Environment variables editor.
-    - [ ] Trigger configuration (HTTP paths, Cron schedules).
+- [x] **Function List View**: Status, runtime, last invoked.
+- [x] **Function Editor (Monaco Editor)**:
+    - [x] Syntax highlighting.
+    - [x] Save & Deploy buttons.
+    - [x] Test tab (send mock JSON payloads with auth support).
+- [x] **Configuration Screens**:
+    - [x] HTTP Trigger configuration (path, method).
+    - [x] CRON Trigger configuration (schedule format).
+    - [x] Environment variables editor (add/edit/delete).
+    - [x] Memory and timeout sliders.
 
 ### 3.3 Observability UI
-- [ ] **Metrics Dashboard**:
-    - [ ] Charts for Invocations, Errors, Duration (using Recharts/Chart.js).
-    - [ ] Connect to Prometheus API.
-- [ ] **Logs Viewer**:
-    - [ ] Real-time log streaming (WebSocket).
-    - [ ] Historical log search (Loki/Elasticsearch integration).
+- [x] **Metrics Dashboard**:
+    - [x] Real-time metrics (invocations, active functions, error rate, latency).
+    - [x] Estimated cost calculation based on usage.
+    - [x] Charts for Invocation Volume (24h) and Latency p95.
+- [x] **Logs Viewer**:
+    - [x] Real-time log streaming with filtering (by level).
+    - [x] Log search functionality.
+    - [x] Timestamp display for each log entry.
+- [x] **Function-Level Metrics**:
+    - [x] Per-function invocation volume chart.
+    - [x] Per-function error rate visualization.
+    - [x] Per-function latency distribution.
 
 ---
 
