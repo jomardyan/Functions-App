@@ -45,6 +45,8 @@ export const FunctionEditor: React.FC<Props> = ({ func, onSave }) => {
     const [bindingOps, setBindingOps] = useState<LogEntry[]>([]);
     const [containerStatus, setContainerStatus] = useState<{ instanceId: string; status: string; busy?: boolean } | null>(null);
     const [testAuthHeader, setTestAuthHeader] = useState<string>('');
+    const [logFilter, setLogFilter] = useState<'ALL' | 'INFO' | 'WARN' | 'ERROR' | 'DEBUG'>('ALL');
+    const [logSearch, setLogSearch] = useState<string>('');
   
   // Config state
   const [showSecret, setShowSecret] = useState<Record<string, boolean>>({});
@@ -248,34 +250,185 @@ export const FunctionEditor: React.FC<Props> = ({ func, onSave }) => {
 
             {activeTab === 'Configuration' && (
               <div className="p-8 max-w-3xl">
-                <h3 className="text-white font-medium mb-4">Environment Variables</h3>
-                <div className="space-y-3 mb-8">
-                    {localFunc.envVars.map((env, idx) => (
-                        <div key={idx} className="flex gap-2">
-                            <input 
-                                type="text" 
-                                value={env.key} 
-                                readOnly 
-                                className="bg-slate-800 border border-slate-700 rounded p-2 text-sm text-slate-300 w-1/3 focus:border-primary-500 outline-none" 
-                            />
-                            <div className="flex-1 relative">
+                <h3 className="text-white font-medium mb-4">HTTP Triggers</h3>
+                <div className="space-y-3 mb-8 bg-slate-900/50 p-4 rounded-lg border border-slate-800">
+                    {localFunc.triggers.filter(t => t.type === 'HTTP').length === 0 ? (
+                        <div className="text-slate-500 text-sm italic py-4">No HTTP triggers configured. Add one below.</div>
+                    ) : (
+                        localFunc.triggers.filter(t => t.type === 'HTTP').map((trigger, idx) => (
+                            <div key={trigger.id} className="flex gap-2 items-center bg-slate-800 p-3 rounded border border-slate-700">
+                                <select 
+                                    value={trigger.config.method || 'POST'} 
+                                    onChange={(e) => {
+                                        const updated = [...localFunc.triggers];
+                                        const triggerIdx = updated.findIndex(t => t.id === trigger.id);
+                                        if (triggerIdx !== -1) {
+                                            updated[triggerIdx].config.method = e.target.value;
+                                            setLocalFunc({...localFunc, triggers: updated});
+                                        }
+                                    }}
+                                    className="bg-slate-700 border border-slate-600 rounded px-2 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-primary-500"
+                                >
+                                    <option>GET</option>
+                                    <option>POST</option>
+                                    <option>PUT</option>
+                                    <option>DELETE</option>
+                                    <option>PATCH</option>
+                                </select>
                                 <input 
-                                    type={env.isSecret && !showSecret[env.key] ? "password" : "text"} 
-                                    value={env.value} 
-                                    readOnly 
-                                    className="w-full bg-slate-800 border border-slate-700 rounded p-2 text-sm text-slate-300 focus:border-primary-500 outline-none pr-8" 
+                                    type="text" 
+                                    value={trigger.config.path || '/'} 
+                                    onChange={(e) => {
+                                        const updated = [...localFunc.triggers];
+                                        const triggerIdx = updated.findIndex(t => t.id === trigger.id);
+                                        if (triggerIdx !== -1) {
+                                            updated[triggerIdx].config.path = e.target.value;
+                                            setLocalFunc({...localFunc, triggers: updated});
+                                        }
+                                    }}
+                                    placeholder="/api/path" 
+                                    className="flex-1 bg-slate-700 border border-slate-600 rounded px-2 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-primary-500" 
                                 />
-                                {env.isSecret && (
-                                    <button 
-                                        className="absolute right-2 top-2 text-slate-500 hover:text-white"
-                                        onClick={() => setShowSecret(prev => ({...prev, [env.key]: !prev[env.key]}))}
-                                    >
-                                        {showSecret[env.key] ? <EyeOff size={14}/> : <Eye size={14}/>}
-                                    </button>
-                                )}
+                                <button 
+                                    onClick={() => {
+                                        const updated = localFunc.triggers.filter(t => t.id !== trigger.id);
+                                        setLocalFunc({...localFunc, triggers: updated});
+                                    }}
+                                    className="text-slate-500 hover:text-rose-500"
+                                >
+                                    <Trash2 size={16} />
+                                </button>
                             </div>
-                        </div>
-                    ))}
+                        ))
+                    )}
+                    <button 
+                        onClick={() => {
+                            const newTrigger = {
+                                id: `t-${Date.now()}`,
+                                type: 'HTTP' as const,
+                                config: { method: 'POST', path: '/api/new' }
+                            };
+                            setLocalFunc({...localFunc, triggers: [...localFunc.triggers, newTrigger]});
+                        }}
+                        className="w-full py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded text-sm transition-colors border border-slate-600"
+                    >
+                        + Add HTTP Trigger
+                    </button>
+                </div>
+
+                <h3 className="text-white font-medium mb-4">CRON Triggers</h3>
+                <div className="space-y-3 mb-8 bg-slate-900/50 p-4 rounded-lg border border-slate-800">
+                    {localFunc.triggers.filter(t => t.type === 'CRON').length === 0 ? (
+                        <div className="text-slate-500 text-sm italic py-4">No CRON triggers configured. Add one below.</div>
+                    ) : (
+                        localFunc.triggers.filter(t => t.type === 'CRON').map((trigger) => (
+                            <div key={trigger.id} className="flex gap-2 items-center bg-slate-800 p-3 rounded border border-slate-700">
+                                <span className="text-xs text-slate-400 w-12">Schedule:</span>
+                                <input 
+                                    type="text" 
+                                    value={trigger.config.schedule || ''} 
+                                    onChange={(e) => {
+                                        const updated = [...localFunc.triggers];
+                                        const triggerIdx = updated.findIndex(t => t.id === trigger.id);
+                                        if (triggerIdx !== -1) {
+                                            updated[triggerIdx].config.schedule = e.target.value;
+                                            setLocalFunc({...localFunc, triggers: updated});
+                                        }
+                                    }}
+                                    placeholder="0 0 * * * (Unix cron format)" 
+                                    className="flex-1 bg-slate-700 border border-slate-600 rounded px-2 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-primary-500 font-mono" 
+                                />
+                                <button 
+                                    onClick={() => {
+                                        const updated = localFunc.triggers.filter(t => t.id !== trigger.id);
+                                        setLocalFunc({...localFunc, triggers: updated});
+                                    }}
+                                    className="text-slate-500 hover:text-rose-500"
+                                >
+                                    <Trash2 size={16} />
+                                </button>
+                            </div>
+                        ))
+                    )}
+                    <button 
+                        onClick={() => {
+                            const newTrigger = {
+                                id: `t-${Date.now()}`,
+                                type: 'CRON' as const,
+                                config: { schedule: '0 0 * * *' }
+                            };
+                            setLocalFunc({...localFunc, triggers: [...localFunc.triggers, newTrigger]});
+                        }}
+                        className="w-full py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded text-sm transition-colors border border-slate-600"
+                    >
+                        + Add CRON Trigger
+                    </button>
+                </div>
+
+                <h3 className="text-white font-medium mb-4">Environment Variables</h3>
+                <div className="space-y-3 mb-8 bg-slate-900/50 p-4 rounded-lg border border-slate-800">
+                    {localFunc.envVars.length === 0 ? (
+                        <div className="text-slate-500 text-sm italic py-4">No environment variables configured.</div>
+                    ) : (
+                        localFunc.envVars.map((env, idx) => (
+                            <div key={idx} className="flex gap-2 items-center bg-slate-800 p-3 rounded border border-slate-700">
+                                <input 
+                                    type="text" 
+                                    value={env.key} 
+                                    onChange={(e) => {
+                                        const updated = [...localFunc.envVars];
+                                        updated[idx].key = e.target.value;
+                                        setLocalFunc({...localFunc, envVars: updated});
+                                    }}
+                                    placeholder="KEY" 
+                                    className="bg-slate-700 border border-slate-600 rounded px-2 py-1.5 text-xs text-slate-300 w-1/4 focus:outline-none focus:border-primary-500" 
+                                />
+                                <div className="flex-1 relative">
+                                    <input 
+                                        type={env.isSecret && !showSecret[env.key] ? "password" : "text"} 
+                                        value={env.value} 
+                                        onChange={(e) => {
+                                            const updated = [...localFunc.envVars];
+                                            updated[idx].value = e.target.value;
+                                            setLocalFunc({...localFunc, envVars: updated});
+                                        }}
+                                        placeholder="value" 
+                                        className="w-full bg-slate-700 border border-slate-600 rounded px-2 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-primary-500 pr-8" 
+                                    />
+                                    {env.isSecret && (
+                                        <button 
+                                            className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white"
+                                            onClick={() => setShowSecret(prev => ({...prev, [env.key]: !prev[env.key]}))}
+                                        >
+                                            {showSecret[env.key] ? <EyeOff size={14}/> : <Eye size={14}/>}
+                                        </button>
+                                    )}
+                                </div>
+                                <button 
+                                    onClick={() => {
+                                        const updated = localFunc.envVars.filter((_, i) => i !== idx);
+                                        setLocalFunc({...localFunc, envVars: updated});
+                                    }}
+                                    className="text-slate-500 hover:text-rose-500"
+                                >
+                                    <Trash2 size={16} />
+                                </button>
+                            </div>
+                        ))
+                    )}
+                    <button 
+                        onClick={() => {
+                            const newEnv = {
+                                key: `NEW_VAR_${localFunc.envVars.length + 1}`,
+                                value: '',
+                                isSecret: false
+                            };
+                            setLocalFunc({...localFunc, envVars: [...localFunc.envVars, newEnv]});
+                        }}
+                        className="w-full py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded text-sm transition-colors border border-slate-600"
+                    >
+                        + Add Environment Variable
+                    </button>
                 </div>
 
                 <h3 className="text-white font-medium mb-4">Resources</h3>
@@ -312,7 +465,7 @@ export const FunctionEditor: React.FC<Props> = ({ func, onSave }) => {
                     </div>
                 </div>
                 <button 
-                    onClick={() => handleUpdateConfig({ memory: localFunc.memory, timeout: localFunc.timeout })}
+                    onClick={() => handleUpdateConfig({ memory: localFunc.memory, timeout: localFunc.timeout, triggers: localFunc.triggers, envVars: localFunc.envVars })}
                     className="mt-6 bg-primary-600 text-white px-4 py-2 rounded text-sm"
                 >
                     Save Configuration
@@ -321,44 +474,116 @@ export const FunctionEditor: React.FC<Props> = ({ func, onSave }) => {
             )}
 
             {activeTab === 'Bindings' && (
-                <div className="p-8">
+                <div className="p-8 max-w-3xl">
                     <div className="flex justify-between items-center mb-6">
                         <div>
                             <h3 className="text-white font-medium">Infrastructure Bindings</h3>
-                            <p className="text-sm text-slate-400">Abstract external services as input/output objects.</p>
+                            <p className="text-sm text-slate-400">Connect external services (databases, storage, queues) to your functions.</p>
                         </div>
-                        <button className="text-sm text-primary-400 hover:text-primary-300 flex items-center gap-1">
-                            <Settings size={14} /> Manage Connectors
-                        </button>
                     </div>
 
-                    <div className="grid grid-cols-1 gap-4">
+                    <div className="grid grid-cols-1 gap-4 mb-8">
                         {localFunc.bindings.length === 0 && (
                             <div className="p-8 border-2 border-dashed border-slate-800 rounded-lg text-center text-slate-500">
-                                No bindings configured. Add a database, queue, or storage binding.
+                                No bindings configured. Add one below.
                             </div>
                         )}
-                        {localFunc.bindings.map((binding) => (
-                            <div key={binding.id} className="bg-slate-900 border border-slate-800 rounded-lg p-4 flex items-center gap-4">
-                                <div className="p-3 bg-slate-800 rounded-lg text-slate-300">
-                                    <Database size={20} />
-                                </div>
-                                <div className="flex-1">
-                                    <div className="flex items-center gap-2">
-                                        <span className="text-white font-medium">{binding.name}</span>
-                                        <span className="text-xs bg-slate-800 px-2 py-0.5 rounded text-slate-400 border border-slate-700 uppercase">{binding.type}</span>
-                                        <span className="text-xs bg-primary-900/30 text-primary-400 px-2 py-0.5 rounded border border-primary-900/50 uppercase">{binding.direction}</span>
+                        {localFunc.bindings.map((binding, idx) => (
+                            <div key={binding.id} className="bg-slate-900 border border-slate-800 rounded-lg p-4">
+                                <div className="flex items-start gap-4 mb-3">
+                                    <div className="flex-1">
+                                        <input 
+                                            type="text"
+                                            value={binding.name}
+                                            onChange={(e) => {
+                                                const updated = [...localFunc.bindings];
+                                                updated[idx].name = e.target.value;
+                                                setLocalFunc({...localFunc, bindings: updated});
+                                            }}
+                                            placeholder="Binding name"
+                                            className="bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-sm text-slate-300 w-full focus:outline-none focus:border-primary-500 mb-2"
+                                        />
+                                        <div className="flex gap-2 mb-2">
+                                            <select 
+                                                value={binding.type}
+                                                onChange={(e) => {
+                                                    const updated = [...localFunc.bindings];
+                                                    updated[idx].type = e.target.value as any;
+                                                    setLocalFunc({...localFunc, bindings: updated});
+                                                }}
+                                                className="bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-primary-500"
+                                            >
+                                                <option>postgres</option>
+                                                <option>redis</option>
+                                                <option>s3</option>
+                                                <option>sqs</option>
+                                                <option>dynamodb</option>
+                                            </select>
+                                            <select 
+                                                value={binding.direction}
+                                                onChange={(e) => {
+                                                    const updated = [...localFunc.bindings];
+                                                    updated[idx].direction = e.target.value as any;
+                                                    setLocalFunc({...localFunc, bindings: updated});
+                                                }}
+                                                className="bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-primary-500"
+                                            >
+                                                <option>input</option>
+                                                <option>output</option>
+                                                <option>bidirectional</option>
+                                            </select>
+                                        </div>
+                                        <textarea 
+                                            value={JSON.stringify(binding.config, null, 2)}
+                                            onChange={(e) => {
+                                                try {
+                                                    const updated = [...localFunc.bindings];
+                                                    updated[idx].config = JSON.parse(e.target.value);
+                                                    setLocalFunc({...localFunc, bindings: updated});
+                                                } catch (err) {
+                                                    // Invalid JSON, ignore
+                                                }
+                                            }}
+                                            placeholder="Connection config (JSON)"
+                                            className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-primary-500 font-mono h-24"
+                                        />
                                     </div>
-                                    <p className="text-xs text-slate-500 mt-1 font-mono">
-                                        {JSON.stringify(binding.config).substring(0, 60)}...
-                                    </p>
+                                    <button 
+                                        onClick={() => {
+                                            const updated = localFunc.bindings.filter((_, i) => i !== idx);
+                                            setLocalFunc({...localFunc, bindings: updated});
+                                        }}
+                                        className="text-slate-500 hover:text-rose-500 mt-1"
+                                    >
+                                        <Trash2 size={18} />
+                                    </button>
                                 </div>
-                                <button className="text-slate-500 hover:text-rose-500">
-                                    <Trash2 size={18} />
-                                </button>
                             </div>
                         ))}
                     </div>
+
+                    <button 
+                        onClick={() => {
+                            const newBinding = {
+                                id: `b-${Date.now()}`,
+                                name: 'new-binding',
+                                type: 'postgres' as const,
+                                direction: 'input' as const,
+                                config: { host: 'localhost', port: 5432 }
+                            };
+                            setLocalFunc({...localFunc, bindings: [...localFunc.bindings, newBinding]});
+                        }}
+                        className="w-full py-3 bg-primary-600 hover:bg-primary-500 text-white rounded text-sm font-medium transition-colors"
+                    >
+                        + Add Binding
+                    </button>
+
+                    <button 
+                        onClick={() => handleUpdateConfig({ bindings: localFunc.bindings })}
+                        className="w-full mt-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded text-sm transition-colors"
+                    >
+                        Save Bindings
+                    </button>
                 </div>
             )}
 
@@ -515,23 +740,55 @@ export const FunctionEditor: React.FC<Props> = ({ func, onSave }) => {
 
                <div>
                    <label className="text-xs text-slate-500 uppercase font-bold block mb-2">Live Logs</label>
-                   <div className="space-y-2 font-mono text-xs">
-                       {logs.length === 0 && <div className="text-slate-600 italic">No logs available.</div>}
-                       {logs.map((log) => (
-                           <div key={log.id} className={`pl-2 py-1 border-l-2 ${
-                               log.level === 'ERROR' ? 'border-rose-500 text-rose-400' : 
-                               log.level === 'WARN' ? 'border-amber-500 text-amber-400' : 
-                               'border-emerald-500 text-slate-400'
-                           }`}>
-                               <div className="flex justify-between text-slate-600 mb-0.5">
-                                   <span>{new Date(log.timestamp).toLocaleTimeString()}</span>
-                                   {log.coldStart && <span className="text-blue-400 flex items-center gap-0.5"><Clock size={10}/> Cold</span>}
-                                </div>
-                               <div className="break-words leading-snug">
-                                   {log.message}
+                   <div className="mb-3 space-y-2">
+                       <input 
+                           type="text"
+                           placeholder="Search logs..."
+                           value={logSearch}
+                           onChange={(e) => setLogSearch(e.target.value)}
+                           className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-primary-500"
+                       />
+                       <select 
+                           value={logFilter}
+                           onChange={(e) => setLogFilter(e.target.value as any)}
+                           className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-primary-500"
+                       >
+                           <option value="ALL">All Levels</option>
+                           <option value="INFO">INFO</option>
+                           <option value="WARN">WARN</option>
+                           <option value="ERROR">ERROR</option>
+                           <option value="DEBUG">DEBUG</option>
+                       </select>
+                   </div>
+                   <div className="space-y-2 font-mono text-xs max-h-64 overflow-y-auto">
+                       {(() => {
+                           const filtered = logs.filter(log => {
+                               const levelMatch = logFilter === 'ALL' || log.level === logFilter;
+                               const searchMatch = logSearch === '' || log.message.toLowerCase().includes(logSearch.toLowerCase());
+                               return levelMatch && searchMatch;
+                           });
+                           
+                           if (filtered.length === 0) {
+                               return <div className="text-slate-600 italic">No logs matching filters.</div>;
+                           }
+                           
+                           return filtered.map((log) => (
+                               <div key={log.id} className={`pl-2 py-1 border-l-2 ${
+                                   log.level === 'ERROR' ? 'border-rose-500 text-rose-400' : 
+                                   log.level === 'WARN' ? 'border-amber-500 text-amber-400' : 
+                                   log.level === 'DEBUG' ? 'border-slate-600 text-slate-500' :
+                                   'border-emerald-500 text-slate-400'
+                               }`}>
+                                   <div className="flex justify-between text-slate-600 mb-0.5">
+                                       <span>{new Date(log.timestamp).toLocaleTimeString()}</span>
+                                       {log.coldStart && <span className="text-blue-400 flex items-center gap-0.5"><Clock size={10}/> Cold</span>}
+                                    </div>
+                                   <div className="break-words leading-snug">
+                                       {log.message}
+                                   </div>
                                </div>
-                           </div>
-                       ))}
+                           ));
+                       })()}
                    </div>
                </div>
            </div>

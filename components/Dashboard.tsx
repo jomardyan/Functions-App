@@ -6,7 +6,8 @@ import {
   Zap, 
   DollarSign, 
   ArrowUpRight, 
-  ArrowDownRight 
+  ArrowDownRight,
+  AlertCircle
 } from 'lucide-react';
 import { 
   AreaChart, 
@@ -20,7 +21,7 @@ import {
   Bar
 } from 'recharts';
 import { PlatformService } from '../services/platform';
-import { MetricPoint } from '../types';
+import { MetricPoint, ServerlessFunction, LogEntry } from '../types';
 
 const MetricCard = ({ title, value, change, positive, icon: Icon }: any) => (
   <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl shadow-sm hover:shadow-md transition-shadow duration-200">
@@ -45,16 +46,55 @@ const MetricCard = ({ title, value, change, positive, icon: Icon }: any) => (
 
 export const Dashboard: React.FC = () => {
   const [metrics, setMetrics] = useState<MetricPoint[]>([]);
+  const [functions, setFunctions] = useState<ServerlessFunction[]>([]);
   const [loading, setLoading] = useState(true);
+  const [allLogs, setAllLogs] = useState<LogEntry[]>([]);
 
   useEffect(() => {
-    PlatformService.getMetrics().then((data) => {
-        setMetrics(data);
+    const loadData = async () => {
+      try {
+        const [metricsData, funcsData] = await Promise.all([
+          PlatformService.getMetrics(),
+          PlatformService.getFunctions()
+        ]);
+        
+        setMetrics(metricsData);
+        setFunctions(funcsData);
+        
+        // Collect all logs from all functions
+        const allFunctionLogs: LogEntry[] = [];
+        for (const func of funcsData) {
+          const logs = await PlatformService.getLogs(func.id);
+          allFunctionLogs.push(...logs);
+        }
+        setAllLogs(allFunctionLogs);
         setLoading(false);
-    });
+      } catch (e) {
+        console.error(e);
+        setLoading(false);
+      }
+    };
+    loadData();
   }, []);
 
   if (loading) return <div className="p-8 text-slate-500">Loading insights...</div>;
+
+  // Calculate real metrics from functions and logs
+  const totalInvocations = allLogs.filter(l => l.level === 'REPORT').length;
+  const totalErrors = allLogs.filter(l => l.level === 'ERROR').length;
+  const errorRate = totalInvocations > 0 ? ((totalErrors / totalInvocations) * 100).toFixed(1) : '0';
+  const activeFunctions = functions.filter(f => f.status === 'Active').length;
+  const avgLatency = allLogs
+    .filter(l => l.duration)
+    .reduce((sum, l) => sum + (l.duration || 0), 0) / Math.max(allLogs.filter(l => l.duration).length, 1);
+  
+  // Estimate cost: $0.0000002 per invocation + $0.0000167 per GB-second
+  const costPerInvocation = 0.0000002;
+  const costPerGBSecond = 0.0000167;
+  const totalCost = (totalInvocations * costPerInvocation) + 
+    (allLogs.filter(l => l.memoryUsed && l.billedDuration)
+      .reduce((sum, l) => sum + ((l.memoryUsed || 0) / 1024) * ((l.billedDuration || 0) / 1000) * costPerGBSecond, 0));
+
 
   return (
     <div className="p-8 space-y-8 animate-in fade-in duration-500">
@@ -67,32 +107,46 @@ export const Dashboard: React.FC = () => {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <MetricCard 
           title="Total Invocations" 
-          value="12.5M" 
-          change="14.2%" 
-          positive={true} 
+          value={totalInvocations.toLocaleString()} 
+          change={`${totalInvocations > 0 ? '↑' : '→'}`}
+          positive={totalInvocations > 0} 
           icon={Zap} 
         />
         <MetricCard 
           title="Active Functions" 
-          value="48" 
-          change="3" 
-          positive={true} 
+          value={activeFunctions} 
+          change={`${activeFunctions}/${functions.length}`}
+          positive={activeFunctions === functions.length} 
           icon={Server} 
         />
         <MetricCard 
-          title="Avg Latency" 
-          value="124ms" 
-          change="12ms" 
-          positive={false} 
-          icon={Activity} 
+          title="Error Rate" 
+          value={`${errorRate}%`}
+          change={`${totalErrors} errors`}
+          positive={parseFloat(errorRate) < 1} 
+          icon={AlertCircle} 
         />
         <MetricCard 
-          title="Estimated Cost" 
-          value="$342.50" 
-          change="8.1%" 
-          positive={true} 
-          icon={DollarSign} 
+          title="Avg Latency" 
+          value={`${Math.round(avgLatency)}ms`}
+          change={allLogs.length > 0 ? 'from invocations' : '—'} 
+          positive={avgLatency < 100} 
+          icon={Activity} 
         />
+      </div>
+
+      {/* Cost Card */}
+      <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl">
+        <div className="flex justify-between items-start">
+          <div>
+            <p className="text-slate-400 text-sm font-medium mb-1">Estimated Monthly Cost</p>
+            <h3 className="text-3xl font-bold text-white tracking-tight">${totalCost.toFixed(4)}</h3>
+            <p className="text-xs text-slate-500 mt-2">Based on {totalInvocations} invocations and {allLogs.filter(l => l.memoryUsed).length} metered executions</p>
+          </div>
+          <div className="p-2 rounded-lg bg-amber-500/10 text-amber-500">
+            <DollarSign size={20} />
+          </div>
+        </div>
       </div>
 
       {/* Charts */}
