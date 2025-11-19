@@ -41,6 +41,10 @@ export const FunctionEditor: React.FC<Props> = ({ func, onSave }) => {
   
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [localFunc, setLocalFunc] = useState(func);
+    const [rateLimit, setRateLimit] = useState<{ tokens: number; capacity: number } | null>(null);
+    const [bindingOps, setBindingOps] = useState<LogEntry[]>([]);
+    const [containerStatus, setContainerStatus] = useState<{ instanceId: string; status: string; busy?: boolean } | null>(null);
+    const [testAuthHeader, setTestAuthHeader] = useState<string>('');
   
   // Config state
   const [showSecret, setShowSecret] = useState<Record<string, boolean>>({});
@@ -49,12 +53,25 @@ export const FunctionEditor: React.FC<Props> = ({ func, onSave }) => {
       setLocalFunc(func);
       setCode(func.code);
       fetchLogs();
+      fetchRateLimit();
+      fetchContainerStatus();
   }, [func.id]);
 
   const fetchLogs = async () => {
       const fetchedLogs = await PlatformService.getLogs(func.id);
       setLogs(fetchedLogs);
+      setBindingOps(fetchedLogs.filter(l => l.message && (l.message.includes('Output binding') || l.message.includes('Output binding wrote') || l.message.includes('No binding injected'))));
   };
+
+    const fetchRateLimit = async () => {
+            try {
+                // @ts-ignore
+                const rl = await PlatformService.getRateLimitStatus(func.id);
+                setRateLimit({ tokens: rl.tokens, capacity: rl.capacity });
+            } catch (e) {
+                setRateLimit(null);
+            }
+    };
 
   const handleGenerate = async () => {
     if (!aiPrompt) return;
@@ -69,6 +86,16 @@ export const FunctionEditor: React.FC<Props> = ({ func, onSave }) => {
       setIsGenerating(false);
     }
   };
+
+    const fetchContainerStatus = async () => {
+            try {
+                // @ts-ignore
+                const st = await PlatformService.getContainerStatus(func.id);
+                setContainerStatus(st);
+            } catch (e) {
+                setContainerStatus(null);
+            }
+    };
 
   const handleSave = async () => {
     setIsDeploying(true);
@@ -95,7 +122,9 @@ export const FunctionEditor: React.FC<Props> = ({ func, onSave }) => {
     setTestResult(null);
     try {
         // Execute real function code in the worker
-        const response = await PlatformService.invokeFunction(func.id, JSON.stringify({ test: true, timestamp: Date.now() }));
+        const response = await PlatformService.invokeFunction(func.id, JSON.stringify({ test: true, timestamp: Date.now() }), testAuthHeader || undefined);
+        // Update rate limit after invocation
+        fetchRateLimit();
         setTestResult(response);
         fetchLogs();
     } catch (e) {
@@ -138,14 +167,19 @@ export const FunctionEditor: React.FC<Props> = ({ func, onSave }) => {
             {isDeploying ? 'Deploying...' : localFunc.status}
           </span>
         </div>
-        <div className="flex items-center space-x-2">
-          <button 
-            onClick={runTest}
-            disabled={isTesting}
+                <div className="flex items-center space-x-2">
+                    {rateLimit && (
+                        <div className={`px-2 py-0.5 rounded text-xs font-medium border ${rateLimit.tokens <= 0 ? 'bg-rose-500/10 text-rose-400 border-rose-500/20' : 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20'}`}>
+                            Rate: {rateLimit.tokens}/{rateLimit.capacity}
+                        </div>
+                    )}
+                    <button 
+                        onClick={runTest}
+                        disabled={isTesting || (rateLimit && rateLimit.tokens <= 0)}
             className={`flex items-center px-3 py-1.5 text-sm font-medium text-slate-300 hover:text-white hover:bg-slate-800 rounded-md transition-colors ${isTesting ? 'opacity-50' : ''}`}
           >
             <Play size={16} className={`mr-2 text-emerald-500 ${isTesting ? 'animate-pulse' : ''}`} />
-            {isTesting ? 'Running...' : 'Test'}
+                        {isTesting ? 'Running...' : rateLimit && rateLimit.tokens <= 0 ? 'Rate Limited' : 'Test'}
           </button>
           <button 
             onClick={handleSave}
@@ -330,6 +364,32 @@ export const FunctionEditor: React.FC<Props> = ({ func, onSave }) => {
 
             {activeTab === 'Test' && (
                 <div className="p-4 h-full flex flex-col">
+                    <div className="mb-3">
+                        <label className="block text-xs font-medium text-slate-500 uppercase mb-2">Authorization Header (Optional)</label>
+                        <div className="flex gap-2 mb-2">
+                            <select 
+                                className="flex-1 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-primary-500"
+                                defaultValue="api-key"
+                            >
+                                <option value="api-key">API Key: sk-test-abc123</option>
+                                <option value="api-key-2">API Key: sk-test-xyz789</option>
+                                <option value="bearer">Bearer (Mock JWT)</option>
+                            </select>
+                            <button 
+                                onClick={() => setTestAuthHeader('')}
+                                className="px-3 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded text-sm text-slate-400 transition-colors"
+                            >
+                                Clear
+                            </button>
+                        </div>
+                        <input 
+                            type="text"
+                            placeholder="e.g., apikey sk-test-abc123 or bearer eyJhbGc..."
+                            className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm font-mono text-slate-300 focus:outline-none focus:border-primary-500 transition-colors"
+                            value={testAuthHeader}
+                            onChange={(e) => setTestAuthHeader(e.target.value)}
+                        />
+                    </div>
                     <div className="mb-4">
                         <label className="block text-xs font-medium text-slate-500 uppercase mb-2">Test Event JSON</label>
                         <textarea 
@@ -346,13 +406,33 @@ export const FunctionEditor: React.FC<Props> = ({ func, onSave }) => {
                                 {testResult ? (
                                     <>
                                         <div className="text-slate-500 mb-2">// Status: {testResult.result.statusCode}</div>
-                                        <pre className="text-emerald-400">{JSON.stringify(testResult.result.body, null, 2)}</pre>
+                                                                                <pre className="text-emerald-400">{JSON.stringify(testResult.result.body, null, 2)}</pre>
+                                                                                <div className="text-slate-400 mt-2">
+                                                                                    <div className="text-xs"><strong>Event:</strong></div>
+                                                                                    <pre className="text-xs text-slate-500">{JSON.stringify(testResult.event ?? {}, null, 2)}</pre>
+                                                                                    <div className="text-xs mt-2"><strong>Context:</strong></div>
+                                                                                    <pre className="text-xs text-slate-500">{JSON.stringify(testResult.context ?? {}, null, 2)}</pre>
+                                                                                </div>
                                     </>
                                 ) : (
                                     <span className="text-slate-600 italic">Run a test to see real execution results...</span>
                                 )}
                             </div>
                         </div>
+
+                    {bindingOps.length > 0 && (
+                        <div className="mt-2 p-3 bg-slate-900 border border-slate-800 rounded text-xs text-slate-300">
+                            <div className="mb-2 text-slate-400 font-medium">Binding Operations</div>
+                            <div className="space-y-2 font-mono text-xs">
+                                {bindingOps.map(b => (
+                                    <div key={b.id} className={`pl-2 py-1 border-l-2 ${b.level === 'ERROR' ? 'border-rose-500 text-rose-400' : 'border-emerald-500 text-slate-400'}`}>
+                                        <div className="flex justify-between text-slate-500 mb-0.5"><span>{new Date(b.timestamp).toLocaleTimeString()}</span></div>
+                                        <div className="break-words">{b.message}</div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
 
                         {testResult && (
                             <div className="h-1/2 bg-slate-950 border border-slate-800 rounded flex flex-col overflow-hidden">
@@ -421,6 +501,18 @@ export const FunctionEditor: React.FC<Props> = ({ func, onSave }) => {
                    ))}
                </div>
                
+                            <div className="mb-6">
+                                     <label className="text-xs text-slate-500 uppercase font-bold block mb-2">Container</label>
+                                     {containerStatus ? (
+                                         <div className="bg-slate-800/50 rounded p-3 border border-slate-700 mb-2 text-sm">
+                                             <div className="flex items-center justify-between"><span className="text-slate-300">Instance</span><span className="text-slate-500 font-mono">{containerStatus.instanceId}</span></div>
+                                             <div className="mt-1 text-slate-400">Status: {containerStatus.status} {containerStatus.busy ? '(busy)' : ''}</div>
+                                         </div>
+                                     ) : (
+                                         <div className="text-slate-600 italic">No active container</div>
+                                     )}
+                            </div>
+
                <div>
                    <label className="text-xs text-slate-500 uppercase font-bold block mb-2">Live Logs</label>
                    <div className="space-y-2 font-mono text-xs">

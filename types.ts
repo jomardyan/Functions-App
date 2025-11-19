@@ -48,6 +48,7 @@ export interface ServerlessFunction {
   triggers: Trigger[];
   envVars: EnvVar[];
   bindings: Binding[];
+  maxConcurrent?: number;
 }
 
 export interface LogEntry {
@@ -94,6 +95,25 @@ export interface InvocationResult {
   };
   log: LogEntry;
   trace: Trace;
+  // Optional: the event and context used for execution (helpful for debugging)
+  event?: any;
+  context?: any;
+}
+
+export interface ExecutionContext {
+  requestId: string;
+  functionName: string;
+  memoryLimitInMB: number;
+  bindings: Record<string, any>;
+  remainingTimeInMs: number;
+  version?: string;
+  instanceId?: string;
+  tenant?: string;
+  auth?: {
+    method: 'none' | 'api-key' | 'jwt';
+    authenticated: boolean;
+    claims?: Record<string, any>;
+  };
 }
 
 export interface ChatMessage {

@@ -121,6 +121,154 @@ const createWorkerBlob = () => {
 
 // --- 3. Platform Service (Public API) ---
 
+// Module-level container and rate limiter
+const CONTAINERS: Record<string, { worker: Worker; instanceId: string; lastUsed: number; status: 'WARM' | 'COLD'; busy?: boolean }> = {};
+const RATE_BUCKETS: Record<string, { tokens: number; lastRefill: number; capacity: number; refillPerSec: number }> = {};
+const CONCURRENCY: Record<string, number> = {};
+
+const getOrCreateWorker = (id: string, idleMs = 5 * 60 * 1000) => {
+  const now = Date.now();
+  let cont = CONTAINERS[id];
+  if (cont && (now - cont.lastUsed) < idleMs) {
+    cont.lastUsed = now;
+    cont.status = 'WARM';
+    return { worker: cont.worker, isCold: false, instanceId: cont.instanceId };
+  }
+
+  // Evict old worker if present
+  if (cont) {
+    try { cont.worker.terminate(); } catch (e) {}
+    try { URL.revokeObjectURL((cont.worker as any)._objectURL); } catch (e) {}
+    delete CONTAINERS[id];
+  }
+
+  const workerBlob = createWorkerBlob();
+  const workerUrl = URL.createObjectURL(workerBlob);
+  const worker = new Worker(workerUrl);
+  (worker as any)._objectURL = workerUrl;
+  const instanceId = `i-${Math.random().toString(36).substring(2, 10)}`;
+  CONTAINERS[id] = { worker, instanceId, lastUsed: now, status: 'WARM' };
+
+  // Auto-evict after idle timeout
+  setTimeout(() => {
+    const c = CONTAINERS[id];
+    if (c && (Date.now() - c.lastUsed) >= idleMs) {
+      try { c.worker.terminate(); } catch (e) {}
+      try { URL.revokeObjectURL((c.worker as any)._objectURL); } catch (e) {}
+      delete CONTAINERS[id];
+    }
+  }, idleMs + 1000);
+
+  return { worker, isCold: true, instanceId };
+};
+
+const ensureRateBucket = (id: string, capacity = 100, refillPerSec = 100) => {
+  const now = Date.now();
+  if (!RATE_BUCKETS[id]) {
+    RATE_BUCKETS[id] = { tokens: capacity, lastRefill: now, capacity, refillPerSec };
+  }
+  const bucket = RATE_BUCKETS[id];
+  const elapsedSec = (now - bucket.lastRefill) / 1000;
+  const refill = Math.floor(elapsedSec * bucket.refillPerSec);
+  if (refill > 0) {
+    bucket.tokens = Math.min(bucket.capacity, bucket.tokens + refill);
+    bucket.lastRefill = now;
+  }
+  return bucket;
+};
+
+const normalizeEvent = (payload: any, func: ServerlessFunction) => {
+  let parsed = payload;
+  if (typeof payload === 'string') {
+    try { parsed = JSON.parse(payload); } catch (e) { parsed = { raw: payload }; }
+  }
+  return {
+    body: parsed.body ?? parsed,
+    headers: parsed.headers ?? {},
+    path: parsed.path ?? (func.triggers && func.triggers[0] ? func.triggers[0].config.path : '/'),
+    method: parsed.method ?? (func.triggers && func.triggers[0] ? func.triggers[0].config.method : 'POST'),
+    queryStringParameters: parsed.queryStringParameters ?? (parsed.query || {})
+  };
+};
+
+const createExecutionContext = (func: ServerlessFunction, requestId: string, instanceId?: string, authInfo?: any): any => {
+  return {
+    requestId,
+    functionName: func.name,
+    memoryLimitInMB: func.memory,
+    bindings: {} as Record<string, any>,
+    remainingTimeInMs: func.timeout * 1000,
+    version: func.version,
+    instanceId: instanceId || undefined,
+    tenant: (func as any).tenant || 'default',
+    auth: authInfo || { method: 'none', authenticated: true },
+    getSecret: (key: string) => undefined
+  };
+};
+
+// Mocked API key store (in real system: fetch from metadata service/vault)
+const API_KEYS: Record<string, { tenant: string; tier: string }> = {
+  'sk-test-abc123': { tenant: 'acme-corp', tier: 'premium' },
+  'sk-test-xyz789': { tenant: 'startup-inc', tier: 'basic' }
+};
+
+// Validate API Key
+const validateApiKey = (key: string): { valid: boolean; tenant?: string; tier?: string } => {
+  const info = API_KEYS[key];
+  if (info) return { valid: true, tenant: info.tenant, tier: info.tier };
+  return { valid: false };
+};
+
+// Mock JWT validation (in real: use jsonwebtoken library, verify signature)
+const validateJwt = (token: string): { valid: boolean; claims?: Record<string, any> } => {
+  try {
+    // Simple mock: decode base64 parts (not secure, for demo only)
+    const parts = token.split('.');
+    if (parts.length !== 3) return { valid: false };
+    const payload = JSON.parse(atob(parts[1]));
+    // Mock check: token expires in future
+    if (payload.exp && payload.exp * 1000 > Date.now()) {
+      return { valid: true, claims: payload };
+    }
+    return { valid: false };
+  } catch (e) {
+    return { valid: false };
+  }
+};
+
+// Parse Authorization header and extract credentials
+const parseAuthHeader = (authHeader?: string): { method: string; credentials: string } | null => {
+  if (!authHeader) return null;
+  const [method, ...rest] = authHeader.split(' ');
+  return { method: method.toLowerCase(), credentials: rest.join(' ') };
+};
+
+// HTTP Routing: Match incoming HTTP requests to registered functions
+const routeHttpRequest = (method: string, path: string, allFunctions: ServerlessFunction[]): { functionId: string; routeMatch: string } | null => {
+  // Find first function with matching trigger
+  for (const func of allFunctions) {
+    for (const trigger of func.triggers) {
+      if (trigger.type !== 'HTTP') continue;
+      
+      const triggerMethod = trigger.config.method?.toUpperCase() || 'POST';
+      const triggerPath = trigger.config.path || '/';
+      
+      // Simple path matching: exact or wildcard
+      const methodMatches = method.toUpperCase() === triggerMethod;
+      const pathMatches = triggerPath === '*' || path === triggerPath || path.startsWith(triggerPath + '/');
+      
+      if (methodMatches && pathMatches) {
+        return { 
+          functionId: func.id, 
+          routeMatch: `${triggerMethod} ${triggerPath}` 
+        };
+      }
+    }
+  }
+  
+  return null; // No matching route found
+};
+
 export const PlatformService = {
 
   // --- Initialization ---
@@ -158,8 +306,6 @@ export const PlatformService = {
     const updatedFunc = {
       ...funcs[idx],
       code,
-      status: FunctionStatus.ACTIVE,
-      lastDeployed: new Date().toISOString(),
       version: newVersion
     };
     funcs[idx] = updatedFunc;
@@ -167,7 +313,29 @@ export const PlatformService = {
     // 3. Persist
     Storage.saveFunctions(funcs);
 
-    // 4. Log Deployment
+    // 4. Simulate Build Steps + Registry Push (post-persist)
+    Storage.saveLog(id, {
+      id: Date.now().toString(),
+      timestamp: new Date().toISOString(),
+      level: 'INFO',
+      message: `Building function ${id} (simulated Kaniko)...`,
+      requestId: 'system-build'
+    });
+    await delay(400);
+    Storage.saveLog(id, {
+      id: Date.now().toString(),
+      timestamp: new Date().toISOString(),
+      level: 'INFO',
+      message: `Pushing image for ${id} to registry...`,
+      requestId: 'system-build'
+    });
+    await delay(200);
+    const imageTag = `${id}:${newVersion}`;
+    const registry = JSON.parse(localStorage.getItem('nexus_registry') || '{}');
+    registry[id] = imageTag;
+    localStorage.setItem('nexus_registry', JSON.stringify(registry));
+
+    // 5. Log Deployment
     Storage.saveLog(id, {
       id: Date.now().toString(),
       timestamp: new Date().toISOString(),
@@ -201,9 +369,23 @@ export const PlatformService = {
     return Storage.getMetrics();
   },
 
-  // --- Real Execution Engine ---
+  getRateLimitStatus: async (id: string) => {
+    await delay(20);
+    const bucket = RATE_BUCKETS[id];
+    if (!bucket) return { tokens: 100, capacity: 100, refillPerSec: 100 };
+    return { tokens: bucket.tokens, capacity: bucket.capacity, refillPerSec: bucket.refillPerSec };
+  },
 
-  invokeFunction: async (id: string, payloadStr: string): Promise<InvocationResult> => {
+  getContainerStatus: async (id: string) => {
+    await delay(10);
+    const c = CONTAINERS[id];
+    if (!c) return null;
+    return { instanceId: c.instanceId, status: c.status, lastUsed: c.lastUsed, busy: !!c.busy };
+  },
+
+  // --- Runtime Containers & Rate Limiting ---
+
+  invokeFunction: async (id: string, payloadStr: string, authHeader?: string): Promise<InvocationResult> => {
     const func = await PlatformService.getFunction(id);
     if (!func) throw new Error("Function not found");
 
@@ -222,7 +404,100 @@ export const PlatformService = {
       status: 'OK'
     });
 
-    // 2. Context & Binding Injection
+    // 2. Authentication Check
+    let authInfo = { method: 'none' as const, authenticated: true };
+    if (authHeader) {
+      const parsed = parseAuthHeader(authHeader);
+      if (parsed) {
+        if (parsed.method === 'bearer') {
+          // JWT validation
+          const jwtResult = validateJwt(parsed.credentials);
+          if (!jwtResult.valid) {
+            const authLog: LogEntry = {
+              id: Date.now().toString(),
+              timestamp: new Date().toISOString(),
+              level: 'WARN',
+              message: `Authentication failed: invalid JWT token`,
+              requestId
+            };
+            Storage.saveLog(id, authLog);
+            return {
+              result: { statusCode: 401, body: { error: 'Unauthorized: Invalid JWT' } },
+              log: authLog,
+              trace: { id: traceId, requestId, spans: traceSpans }
+            };
+          }
+          authInfo = { method: 'jwt', authenticated: true, claims: jwtResult.claims };
+        } else if (parsed.method === 'apikey') {
+          // API Key validation
+          const keyResult = validateApiKey(parsed.credentials);
+          if (!keyResult.valid) {
+            const authLog: LogEntry = {
+              id: Date.now().toString(),
+              timestamp: new Date().toISOString(),
+              level: 'WARN',
+              message: `Authentication failed: invalid API key`,
+              requestId
+            };
+            Storage.saveLog(id, authLog);
+            return {
+              result: { statusCode: 401, body: { error: 'Unauthorized: Invalid API Key' } },
+              log: authLog,
+              trace: { id: traceId, requestId, spans: traceSpans }
+            };
+          }
+          authInfo = { method: 'api-key', authenticated: true, claims: { tenant: keyResult.tenant, tier: keyResult.tier } };
+        }
+      }
+      // Log auth attempt
+      Storage.saveLog(id, {
+        id: Date.now().toString(),
+        timestamp: new Date().toISOString(),
+        level: 'INFO',
+        message: `Auth: ${authInfo.method} - ${authInfo.authenticated ? 'authenticated' : 'failed'}`,
+        requestId
+      });
+    }
+
+    // 3. Rate Limiting Check
+    const bucket = ensureRateBucket(id, 100, 100);
+    if (bucket.tokens <= 0) {
+      // Rate limited
+      const rlLog: LogEntry = {
+        id: Date.now().toString(),
+        timestamp: new Date().toISOString(),
+        level: 'WARN',
+        message: `Rate limited: tokens=0 for ${id}`,
+        requestId
+      };
+      Storage.saveLog(id, rlLog);
+      return {
+        result: { statusCode: 429, body: { error: 'Rate limit exceeded' } },
+        log: rlLog,
+        trace: { id: traceId, requestId, spans: traceSpans }
+      };
+    }
+    bucket.tokens -= 1;
+
+    // 3. Concurrency Check
+    const inflight = CONCURRENCY[id] || 0;
+    const maxConcurrent = func.maxConcurrent ?? 10;
+    if (inflight >= maxConcurrent) {
+      const cqLog: LogEntry = {
+        id: Date.now().toString(),
+        timestamp: new Date().toISOString(),
+        level: 'WARN',
+        message: `Concurrency limit reached: ${inflight}/${maxConcurrent} for ${id}`,
+        requestId
+      };
+      Storage.saveLog(id, cqLog);
+      return { result: { statusCode: 429, body: { error: 'Concurrency limit exceeded' } }, log: cqLog, trace: { id: traceId, requestId, spans: traceSpans } };
+    }
+    CONCURRENCY[id] = inflight + 1;
+
+    
+
+    // 3. Context & Binding Injection
     // We mimic a real binding system by injecting mock objects into the context
     // In a browser-native platform, we can map 'bindings' to LocalStorage keys or mock APIs
     const bindingsStart = Date.now();
@@ -261,17 +536,48 @@ export const PlatformService = {
     // 3. Parse Environment Variables
     const envVars = func.envVars.reduce((acc, curr) => ({ ...acc, [curr.key]: curr.value }), {});
 
-    // 4. Execute in Web Worker
+    // 4. Acquire Worker (may produce cold start)
+    const containerInfo = getOrCreateWorker(id);
+    let worker = containerInfo.worker;
+    const isCold = containerInfo.isCold;
+    const cont = CONTAINERS[id];
+    let usingTempWorker = false;
+    if (cont && cont.busy) {
+      // Shared worker busy: create a temporary worker for concurrent execution
+      usingTempWorker = true;
+      const workerBlobLocal = createWorkerBlob();
+      const wUrlLocal = URL.createObjectURL(workerBlobLocal);
+      worker = new Worker(wUrlLocal);
+      (worker as any)._objectURL = wUrlLocal;
+    } else if (cont) {
+      cont.busy = true; // mark as busy while shared worker handles this invocation
+    }
+
+    // 5. Runtime Acquire Trace
+    traceSpans.push({
+      id: `sp-${Date.now()}-2`,
+      name: 'runtime.acquire_container',
+      service: 'scheduler',
+      startTime: Date.now(),
+      duration: 0,
+      status: 'OK',
+      attributes: { cold_start: containerInfo.isCold, instance_id: containerInfo.instanceId, version: func.version }
+    });
+
+    // 6. Execute in Web Worker
     return new Promise((resolve, reject) => {
       const execStart = Date.now();
-      const workerBlob = createWorkerBlob();
-      const workerUrl = URL.createObjectURL(workerBlob);
-      const worker = new Worker(workerUrl);
+      // For temporary workers we already created the worker, otherwise we use the shared worker
 
       // Safety timeout
       const timeoutId = setTimeout(() => {
-        worker.terminate();
-        URL.revokeObjectURL(workerUrl);
+        if (usingTempWorker) {
+          try { worker.terminate(); } catch (e) {}
+          try { URL.revokeObjectURL((worker as any)._objectURL); } catch (e) {}
+        } else if (cont) {
+          cont.busy = false;
+          cont.lastUsed = Date.now();
+        }
         
         const duration = Date.now() - execStart;
         const errorLog: LogEntry = {
@@ -285,18 +591,22 @@ export const PlatformService = {
           memoryUsed: func.memory
         };
         Storage.saveLog(id, errorLog);
+        // Decrement concurrency count on timeout
+        CONCURRENCY[id] = Math.max(0, (CONCURRENCY[id] || 1) - 1);
 
         resolve({
           result: { statusCode: 504, body: { error: "Function Timeout" } },
           log: errorLog,
-          trace: { id: traceId, requestId, spans: traceSpans }
+          trace: { id: traceId, requestId, spans: traceSpans },
+          event: eventObj,
+          context: execContext
         });
       }, func.timeout * 1000);
 
       // Listen for worker messages
       let lastLog: LogEntry | null = null;
       
-      worker.onmessage = (e: MessageEvent<WorkerResponse>) => {
+      worker.onmessage = async (e: MessageEvent<WorkerResponse>) => {
         if (e.data.type === 'LOG') {
           const logEntry: LogEntry = {
             id: Date.now().toString() + Math.random(),
@@ -309,8 +619,13 @@ export const PlatformService = {
           lastLog = logEntry; // Track last log for return (simplified)
         } else if (e.data.type === 'RESULT' || e.data.type === 'ERROR') {
           clearTimeout(timeoutId);
-          worker.terminate();
-          URL.revokeObjectURL(workerUrl);
+          if (usingTempWorker) {
+            try { worker.terminate(); } catch (e) {}
+            try { URL.revokeObjectURL((worker as any)._objectURL); } catch (e) {}
+          } else if (cont) {
+            cont.busy = false;
+            cont.lastUsed = Date.now();
+          }
 
           const duration = Date.now() - execStart;
           const isError = e.data.type === 'ERROR';
@@ -323,7 +638,7 @@ export const PlatformService = {
             startTime: execStart,
             duration,
             status: isError ? 'ERROR' : 'OK',
-            attributes: { memory: func.memory, cold_start: true } // Always cold start in this simple model
+            attributes: { memory: func.memory, cold_start: isCold }
           });
 
           // Report Log
@@ -331,14 +646,102 @@ export const PlatformService = {
             id: Date.now().toString(),
             timestamp: new Date().toISOString(),
             level: 'REPORT',
-            message: `REPORT RequestId: ${requestId} Duration: ${duration}ms Billed: ${Math.ceil(duration/100)*100}ms Memory Size: ${func.memory}MB Max Memory Used: ${Math.floor(Math.random() * func.memory * 0.8)}MB`,
+            message: `REPORT RequestId: ${requestId} Duration: ${duration}ms Billed: ${Math.ceil(duration/100)*100}ms Memory Size: ${func.memory}MB Max Memory Used: ${Math.floor(Math.random() * func.memory * 0.8)}MB ColdStart: ${isCold} Instance: ${containerInfo.instanceId}`,
             requestId,
             duration,
             billedDuration: Math.ceil(duration / 100) * 100,
             memoryUsed: Math.floor(Math.random() * func.memory * 0.8),
-            coldStart: true
+            coldStart: isCold
           };
           Storage.saveLog(id, reportLog);
+
+          // --- Output Bindings: If function returned keys that match output bindings, perform writes ---
+          try {
+            const resultPayload: any = isError ? null : (e.data.payload.body ? e.data.payload.body : e.data.payload);
+            if (resultPayload) {
+                  const bindingWrites: Promise<any>[] = [];
+              for (const b of func.bindings.filter(b => b.direction === 'output' || b.direction === 'bidirectional')) {
+                // If result contains a property with the binding name, attempt to write
+                const keyName = b.name;
+                if (resultPayload[keyName] !== undefined) {
+                  const start = Date.now();
+                  traceSpans.push({ id: `sp-${Date.now()}-4`, parentId: `sp-${Date.now()}-3`, name: `binding.output.${b.type}`, service: 'integration-layer', startTime: start, duration: 0, status: 'OK', attributes: { binding: keyName, type: b.type }});
+
+                  const payloadData = resultPayload[keyName];
+                  // Resolve binding write differently per type
+                  const binder = context.bindings[keyName];
+                  if (binder) {
+                    if (b.type === 's3') {
+                      bindingWrites.push(
+                        Promise.resolve(binder.putObject ? binder.putObject(payloadData) : null).then((res) => {
+                          const dur = Date.now() - start;
+                          traceSpans[traceSpans.length - 1].duration = dur;
+                          Storage.saveLog(id, {
+                            id: Date.now().toString() + Math.random(),
+                            timestamp: new Date().toISOString(),
+                            level: 'INFO',
+                            message: `Output binding wrote to S3 (${keyName})`,
+                            requestId
+                          });
+                        })
+                      );
+                    } else if (b.type === 'postgres') {
+                      // If binder exposes query, attempt to call a save or query
+                      bindingWrites.push(
+                        Promise.resolve(binder.query ? binder.query(payloadData) : null).then((res) => {
+                          const dur = Date.now() - start;
+                          traceSpans[traceSpans.length - 1].duration = dur;
+                          Storage.saveLog(id, {
+                            id: Date.now().toString() + Math.random(),
+                            timestamp: new Date().toISOString(),
+                            level: 'INFO',
+                            message: `Output binding wrote to Postgres (${keyName})`,
+                            requestId
+                          });
+                        })
+                      );
+                    } else {
+                      // Generic write
+                      bindingWrites.push(Promise.resolve(binder.set ? binder.set(keyName, payloadData) : null).then(() => {
+                        const dur = Date.now() - start;
+                        traceSpans[traceSpans.length - 1].duration = dur;
+                        Storage.saveLog(id, {
+                          id: Date.now().toString() + Math.random(),
+                          timestamp: new Date().toISOString(),
+                          level: 'INFO',
+                          message: `Output binding wrote to ${b.type} (${keyName})`,
+                          requestId
+                        });
+                      }));
+                    }
+                  } else {
+                    // No binder injected for this name
+                    bindingWrites.push(Promise.resolve().then(() => {
+                      Storage.saveLog(id, {
+                        id: Date.now().toString() + Math.random(),
+                        timestamp: new Date().toISOString(),
+                        level: 'WARN',
+                        message: `No binding injected for ${keyName}`,
+                        requestId
+                      });
+                    }));
+                  }
+                }
+              }
+              if (bindingWrites.length > 0) {
+                await Promise.all(bindingWrites);
+              }
+            }
+          } catch (bwErr) {
+            Storage.saveLog(id, {
+              id: Date.now().toString() + Math.random(),
+              timestamp: new Date().toISOString(),
+              level: 'ERROR',
+              message: `Binding output error: ${String(bwErr)}`,
+              requestId
+            });
+          }
+          CONCURRENCY[id] = Math.max(0, (CONCURRENCY[id] || 1) - 1);
 
           // Update stats (simple in-memory update for list view)
           func.invocations24h++;
@@ -350,27 +753,80 @@ export const PlatformService = {
               { statusCode: 500, body: { error: e.data.payload } } : 
               (e.data.payload.body ? e.data.payload : { statusCode: 200, body: e.data.payload }),
             log: reportLog,
-            trace: { id: traceId, requestId, spans: traceSpans }
+            trace: { id: traceId, requestId, spans: traceSpans },
+            event: eventObj,
+            context: execContext
           });
         }
       };
 
       // Start Execution
       let eventPayload = {};
-      try {
-        eventPayload = JSON.parse(payloadStr);
-      } catch (e) {
-        eventPayload = { raw: payloadStr };
+      try { eventPayload = JSON.parse(payloadStr); } catch (e) { eventPayload = { raw: payloadStr }; }
+      const eventObj = normalizeEvent(eventPayload, func);
+      const execContext = createExecutionContext(func, requestId, containerInfo.instanceId, authInfo);
+
+      // Mount the binding mock objects into execContext.bindings
+      for (const b of Object.keys(context.bindings)) {
+        execContext.bindings[b] = context.bindings[b];
       }
 
       worker.postMessage({
         type: 'EXECUTE',
         code: func.code,
-        event: eventPayload,
-        context,
+        event: eventObj,
+        context: execContext,
         env: envVars
       } as WorkerMessage);
     });
+  },
+
+  // HTTP Gateway: Route incoming HTTP requests to functions
+  invokeHttpRequest: async (method: string, path: string, payloadStr: string, authHeader?: string): Promise<InvocationResult & { routeMatch?: string }> => {
+    const allFunctions = Storage.getFunctions();
+    const route = routeHttpRequest(method, path, allFunctions);
+    
+    if (!route) {
+      // No matching route found
+      const traceId = `tr-${Date.now()}`;
+      const requestId = Math.random().toString(36).substring(7);
+      const notFoundLog: LogEntry = {
+        id: Date.now().toString(),
+        timestamp: new Date().toISOString(),
+        level: 'WARN',
+        message: `No route found for ${method.toUpperCase()} ${path}`,
+        requestId
+      };
+      return {
+        result: { statusCode: 404, body: { error: 'Route not found' } },
+        log: notFoundLog,
+        trace: { id: traceId, requestId, spans: [{
+          id: `sp-${Date.now()}-1`,
+          name: 'gateway.route_not_found',
+          service: 'api-gateway',
+          startTime: Date.now(),
+          duration: 0,
+          status: 'ERROR',
+          attributes: { method, path }
+        }] },
+        routeMatch: undefined
+      };
+    }
+
+    // Route found, invoke the function
+    const result = await PlatformService.invokeFunction(route.functionId, payloadStr, authHeader);
+    
+    // Add routing metadata to trace spans
+    if (result.trace.spans[0]) {
+      result.trace.spans[0].attributes = {
+        ...result.trace.spans[0].attributes,
+        route_match: route.routeMatch,
+        http_method: method,
+        http_path: path
+      };
+    }
+    
+    return { ...result, routeMatch: route.routeMatch };
   }
 };
 
@@ -386,6 +842,7 @@ const DEFAULT_FUNCTIONS: ServerlessFunction[] = [
     status: FunctionStatus.ACTIVE,
     memory: 128,
     timeout: 3,
+    maxConcurrent: 5,
     version: 'v1.0.0',
     invocations24h: 0,
     errorRate: 0,
@@ -416,6 +873,7 @@ exports.handler = async (event, context) => {
     status: FunctionStatus.ACTIVE,
     memory: 512,
     timeout: 10,
+    maxConcurrent: 3,
     version: 'v1.0.2',
     invocations24h: 12,
     errorRate: 0,
