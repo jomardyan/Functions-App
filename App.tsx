@@ -16,11 +16,58 @@ import {
 import { Dashboard } from './components/Dashboard';
 import { FunctionEditor } from './components/FunctionEditor';
 import { AIChat } from './components/AIChat';
+import { InstallationConfig, OnboardingWizard } from './components/OnboardingWizard';
 import { ServerlessFunction, Runtime, FunctionStatus } from './types';
 import { PlatformService } from './services/platform';
 
-// Initialize the platform (Load data from storage or seed defaults)
-PlatformService.initialize();
+const INSTALLATION_STORAGE_KEY = 'nexus_installation_config';
+const FUNCTIONS_STORAGE_KEY = 'nexus_functions';
+
+const isValidInstallationConfig = (value: unknown): value is InstallationConfig => {
+  if (!value || typeof value !== 'object') return false;
+  const config = value as InstallationConfig;
+  if (config.mode !== 'production' && config.mode !== 'demo' && config.mode !== 'development') return false;
+  if (!config.admin || typeof config.admin.fullName !== 'string' || typeof config.admin.email !== 'string') return false;
+  if (!config.database || (config.database.engine !== 'sqlite' && config.database.engine !== 'mysql' && config.database.engine !== 'postgres')) return false;
+  if (typeof config.createdAt !== 'string') return false;
+  return true;
+};
+
+const getInstallationConfig = (): InstallationConfig | null => {
+  const existingConfig = localStorage.getItem(INSTALLATION_STORAGE_KEY);
+  if (existingConfig) {
+    try {
+      const parsed = JSON.parse(existingConfig);
+      if (isValidInstallationConfig(parsed)) return parsed;
+      localStorage.removeItem(INSTALLATION_STORAGE_KEY);
+      return null;
+    } catch (e) {
+      localStorage.removeItem(INSTALLATION_STORAGE_KEY);
+      return null;
+    }
+  }
+
+  const existingFunctions = localStorage.getItem(FUNCTIONS_STORAGE_KEY);
+  if (existingFunctions) {
+    try {
+      const parsed = JSON.parse(existingFunctions);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const migratedConfig: InstallationConfig = {
+          mode: 'demo',
+          admin: { fullName: 'Existing User', email: 'existing@nexus.local' },
+          database: { engine: 'sqlite', filePath: './data/nexus.db' },
+          createdAt: new Date().toISOString()
+        };
+        localStorage.setItem(INSTALLATION_STORAGE_KEY, JSON.stringify(migratedConfig));
+        return migratedConfig;
+      }
+    } catch (e) {
+      return null;
+    }
+  }
+
+  return null;
+};
 
 const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const location = useLocation();
@@ -248,6 +295,22 @@ const FunctionEditorWrapper = () => {
 };
 
 const App: React.FC = () => {
+  const [installationConfig, setInstallationConfig] = useState<InstallationConfig | null>(() => getInstallationConfig());
+  const isInstalled = Boolean(installationConfig);
+
+  useEffect(() => {
+    if (installationConfig) PlatformService.initialize(installationConfig.mode);
+  }, [installationConfig]);
+
+  const handleOnboardingComplete = (config: InstallationConfig) => {
+    localStorage.setItem(INSTALLATION_STORAGE_KEY, JSON.stringify(config));
+    setInstallationConfig(config);
+  };
+
+  if (!isInstalled) {
+    return <OnboardingWizard onComplete={handleOnboardingComplete} />;
+  }
+
   return (
     <Router>
       <Layout>

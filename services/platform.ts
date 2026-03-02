@@ -272,11 +272,12 @@ const routeHttpRequest = (method: string, path: string, allFunctions: Serverless
 export const PlatformService = {
 
   // --- Initialization ---
-  initialize: () => {
+  initialize: (mode: 'production' | 'demo' | 'development' = 'demo') => {
     const existing = Storage.getFunctions();
     if (existing.length === 0) {
-      // Seed default functions if empty
-      Storage.saveFunctions(DEFAULT_FUNCTIONS);
+      if (mode === 'demo' || mode === 'development') {
+        Storage.saveFunctions(DEFAULT_FUNCTIONS);
+      }
     }
   },
 
