@@ -25,17 +25,18 @@ interface OnboardingWizardProps {
   onComplete: (config: InstallationConfig) => void;
 }
 
+const hasValue = (value?: string) => Boolean(value && value.trim());
+
 export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onComplete }) => {
   const [step, setStep] = useState(1);
   const [mode, setMode] = useState<InstallMode>('demo');
-  const [admin, setAdmin] = useState({ fullName: '', email: '', password: '' });
+  const [admin, setAdmin] = useState({ fullName: '', email: '' });
   const [database, setDatabase] = useState({
     engine: 'sqlite' as DatabaseEngine,
     host: '',
     port: '',
     name: '',
     username: '',
-    password: '',
     filePath: './data/nexus.db'
   });
   const [error, setError] = useState('');
@@ -43,8 +44,8 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onComplete }
   const validateStep = () => {
     if (step === 2) {
       if (mode === 'demo') return true;
-      if (!admin.fullName.trim() || !admin.email.trim() || admin.password.length < 8) {
-        setError('Admin name, email, and a password with at least 8 characters are required.');
+      if (!admin.fullName.trim() || !admin.email.trim()) {
+        setError('Admin name and email are required.');
         return false;
       }
     }
@@ -54,9 +55,12 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onComplete }
         setError('SQLite file path is required.');
         return false;
       }
-      if (database.engine !== 'sqlite' && (!database.host.trim() || !database.port.trim() || !database.name.trim() || !database.username.trim() || !database.password.trim())) {
-        setError('Host, port, database name, username, and password are required for server databases.');
-        return false;
+      if (database.engine !== 'sqlite') {
+        const requiredFields = [database.host, database.port, database.name, database.username];
+        if (!requiredFields.every((field) => hasValue(field))) {
+          setError('Host, port, database name, and username are required for server databases.');
+          return false;
+        }
       }
     }
     setError('');
@@ -144,7 +148,6 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onComplete }
                 <h2 className="text-lg font-semibold text-white">Create first admin account</h2>
                 <input className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2" placeholder="Full name" value={admin.fullName} onChange={(e) => setAdmin({ ...admin, fullName: e.target.value })} />
                 <input className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2" placeholder="Email" type="email" value={admin.email} onChange={(e) => setAdmin({ ...admin, email: e.target.value })} />
-                <input className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2" placeholder="Password (min 8 chars)" type="password" value={admin.password} onChange={(e) => setAdmin({ ...admin, password: e.target.value })} />
               </div>
             )}
 
@@ -164,7 +167,6 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onComplete }
                     <input className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2" placeholder="Port" value={database.port} onChange={(e) => setDatabase({ ...database, port: e.target.value })} />
                     <input className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2" placeholder="Database name" value={database.name} onChange={(e) => setDatabase({ ...database, name: e.target.value })} />
                     <input className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2" placeholder="Username" value={database.username} onChange={(e) => setDatabase({ ...database, username: e.target.value })} />
-                    <input className="md:col-span-2 bg-slate-950 border border-slate-700 rounded-lg px-3 py-2" placeholder="Password" type="password" value={database.password} onChange={(e) => setDatabase({ ...database, password: e.target.value })} />
                   </div>
                 )}
               </div>
@@ -174,7 +176,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onComplete }
               <div className="space-y-3 text-sm">
                 <h2 className="text-lg font-semibold text-white">Review setup</h2>
                 <p><span className="text-slate-400">Mode:</span> <span className="text-white capitalize">{mode}</span></p>
-                <p><span className="text-slate-400">Admin:</span> <span className="text-white">{admin.fullName} ({admin.email})</span></p>
+                <p><span className="text-slate-400">Admin:</span> <span className="text-white">{admin.fullName || 'Demo Admin'} ({admin.email || 'demo@nexus.local'})</span></p>
                 <p><span className="text-slate-400">Database:</span> <span className="text-white">{database.engine === 'sqlite' ? `SQLite (${database.filePath})` : `${database.engine.toUpperCase()} @ ${database.host}:${database.port}/${database.name}`}</span></p>
               </div>
             )}

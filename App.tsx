@@ -23,6 +23,38 @@ import { PlatformService } from './services/platform';
 const INSTALLATION_STORAGE_KEY = 'nexus_installation_config';
 const FUNCTIONS_STORAGE_KEY = 'nexus_functions';
 
+const getInstallationConfig = (): InstallationConfig | null => {
+  const existingConfig = localStorage.getItem(INSTALLATION_STORAGE_KEY);
+  if (existingConfig) {
+    try {
+      return JSON.parse(existingConfig);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  const existingFunctions = localStorage.getItem(FUNCTIONS_STORAGE_KEY);
+  if (existingFunctions) {
+    try {
+      const parsed = JSON.parse(existingFunctions);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const migratedConfig: InstallationConfig = {
+          mode: 'demo',
+          admin: { fullName: 'Existing User', email: 'existing@nexus.local' },
+          database: { engine: 'sqlite', filePath: './data/nexus.db' },
+          createdAt: new Date().toISOString()
+        };
+        localStorage.setItem(INSTALLATION_STORAGE_KEY, JSON.stringify(migratedConfig));
+        return migratedConfig;
+      }
+    } catch (e) {
+      return null;
+    }
+  }
+
+  return null;
+};
+
 const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const location = useLocation();
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -249,38 +281,16 @@ const FunctionEditorWrapper = () => {
 };
 
 const App: React.FC = () => {
-  const [isInstalled, setIsInstalled] = useState<boolean>(() => {
-    if (localStorage.getItem(INSTALLATION_STORAGE_KEY)) return true;
-    const existingFunctions = localStorage.getItem(FUNCTIONS_STORAGE_KEY);
-    if (!existingFunctions) return false;
-    try {
-      const parsed = JSON.parse(existingFunctions);
-      return Array.isArray(parsed) && parsed.length > 0;
-    } catch (e) {
-      return false;
-    }
-  });
+  const [installationConfig, setInstallationConfig] = useState<InstallationConfig | null>(() => getInstallationConfig());
+  const isInstalled = Boolean(installationConfig);
 
   useEffect(() => {
-    if (isInstalled) {
-      const savedConfig = localStorage.getItem(INSTALLATION_STORAGE_KEY);
-      let mode: 'production' | 'demo' | 'development' = 'demo';
-      if (savedConfig) {
-        try {
-          const parsed = JSON.parse(savedConfig);
-          if (parsed.mode === 'production' || parsed.mode === 'development' || parsed.mode === 'demo') {
-            mode = parsed.mode;
-          }
-        } catch (e) {}
-      }
-      PlatformService.initialize(mode);
-    }
-  }, [isInstalled]);
+    if (installationConfig) PlatformService.initialize(installationConfig.mode);
+  }, [installationConfig]);
 
   const handleOnboardingComplete = (config: InstallationConfig) => {
     localStorage.setItem(INSTALLATION_STORAGE_KEY, JSON.stringify(config));
-    PlatformService.initialize(config.mode);
-    setIsInstalled(true);
+    setInstallationConfig(config);
   };
 
   if (!isInstalled) {
