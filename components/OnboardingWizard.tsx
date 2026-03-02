@@ -26,6 +26,10 @@ interface OnboardingWizardProps {
 }
 
 const hasValue = (value?: string) => Boolean(value && value.trim());
+const optionalValue = (value?: string) => {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+};
 
 export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onComplete }) => {
   const [step, setStep] = useState(1);
@@ -81,11 +85,11 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onComplete }
       },
       database: {
         engine: database.engine,
-        host: database.engine === 'sqlite' ? undefined : database.host.trim(),
-        port: database.engine === 'sqlite' ? undefined : database.port.trim(),
-        name: database.engine === 'sqlite' ? undefined : database.name.trim(),
-        username: database.engine === 'sqlite' ? undefined : database.username.trim(),
-        filePath: database.engine === 'sqlite' ? database.filePath.trim() : undefined
+        host: database.engine === 'sqlite' ? undefined : optionalValue(database.host),
+        port: database.engine === 'sqlite' ? undefined : optionalValue(database.port),
+        name: database.engine === 'sqlite' ? undefined : optionalValue(database.name),
+        username: database.engine === 'sqlite' ? undefined : optionalValue(database.username),
+        filePath: database.engine === 'sqlite' ? optionalValue(database.filePath) : undefined
       },
       createdAt: new Date().toISOString()
     });
@@ -184,7 +188,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onComplete }
             {error && <div className="text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded-lg p-3 text-sm">{error}</div>}
 
             <div className="flex justify-between pt-2">
-              <button onClick={() => setStep((s) => Math.max(1, s - 1))} className="px-4 py-2 text-sm rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-50" disabled={step === 1}>Back</button>
+              <button onClick={() => { setError(''); setStep((s) => Math.max(1, s - 1)); }} className="px-4 py-2 text-sm rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-50" disabled={step === 1}>Back</button>
               {step < 4 ? (
                 <button onClick={handleNext} className="px-4 py-2 text-sm rounded-lg bg-primary-600 hover:bg-primary-500 text-white flex items-center gap-2">Next <ChevronRight size={16} /></button>
               ) : (
