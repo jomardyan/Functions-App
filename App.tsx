@@ -16,11 +16,12 @@ import {
 import { Dashboard } from './components/Dashboard';
 import { FunctionEditor } from './components/FunctionEditor';
 import { AIChat } from './components/AIChat';
+import { InstallationConfig, OnboardingWizard } from './components/OnboardingWizard';
 import { ServerlessFunction, Runtime, FunctionStatus } from './types';
 import { PlatformService } from './services/platform';
 
-// Initialize the platform (Load data from storage or seed defaults)
-PlatformService.initialize();
+const INSTALLATION_STORAGE_KEY = 'nexus_installation_config';
+const FUNCTIONS_STORAGE_KEY = 'nexus_functions';
 
 const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const location = useLocation();
@@ -248,6 +249,44 @@ const FunctionEditorWrapper = () => {
 };
 
 const App: React.FC = () => {
+  const [isInstalled, setIsInstalled] = useState<boolean>(() => {
+    if (localStorage.getItem(INSTALLATION_STORAGE_KEY)) return true;
+    const existingFunctions = localStorage.getItem(FUNCTIONS_STORAGE_KEY);
+    if (!existingFunctions) return false;
+    try {
+      const parsed = JSON.parse(existingFunctions);
+      return Array.isArray(parsed) && parsed.length > 0;
+    } catch (e) {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    if (isInstalled) {
+      const savedConfig = localStorage.getItem(INSTALLATION_STORAGE_KEY);
+      let mode: 'production' | 'demo' | 'development' = 'demo';
+      if (savedConfig) {
+        try {
+          const parsed = JSON.parse(savedConfig);
+          if (parsed.mode === 'production' || parsed.mode === 'development' || parsed.mode === 'demo') {
+            mode = parsed.mode;
+          }
+        } catch (e) {}
+      }
+      PlatformService.initialize(mode);
+    }
+  }, [isInstalled]);
+
+  const handleOnboardingComplete = (config: InstallationConfig) => {
+    localStorage.setItem(INSTALLATION_STORAGE_KEY, JSON.stringify(config));
+    PlatformService.initialize(config.mode);
+    setIsInstalled(true);
+  };
+
+  if (!isInstalled) {
+    return <OnboardingWizard onComplete={handleOnboardingComplete} />;
+  }
+
   return (
     <Router>
       <Layout>
