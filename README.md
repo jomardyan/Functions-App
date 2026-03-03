@@ -4,8 +4,6 @@
 
 A full-featured serverless Function-as-a-Service management console built with React, TypeScript, and AI assistance. Manage, deploy, and monitor serverless functions with a modern dark-themed UI.
 
-View your app in AI Studio: https://ai.studio/apps/drive/1cPCHI-AcZBq2nRlTEEh5XSRJkwjs-4UZ
-
 ## Features
 
 - **Platform Dashboard** — Real-time metrics (invocations, error rate, latency, estimated cost) with area and bar charts
