@@ -83,7 +83,7 @@ Click **AI Architect** in the top bar to open a side-panel chat powered by Gemin
 
 ### Onboarding wizard (first-time setup)
 
-![Onboarding Wizard](https://github.com/user-attachments/assets/b6fb97fb-edd9-4b00-be40-c5eb4bd0d7ee)
+![Onboarding Wizard](docs/screenshots/onboarding.png)
 
 ### Platform Dashboard
 
@@ -106,3 +106,24 @@ Click **AI Architect** in the top bar to open a side-panel chat powered by Gemin
 - **React Router v7** — client-side routing
 - **Lucide React** — icon library
 - **Google Gemini** (`@google/genai`) — AI chat and code generation
+
+## Production Build & Deployment
+
+To create a production-optimised bundle:
+
+```bash
+npm run build
+```
+
+The output is written to the `dist/` folder and can be served by any static-file host.
+
+### Deploying to a static host
+
+| Platform | One-liner |
+|----------|-----------|
+| **Netlify** | `netlify deploy --dir dist --prod` |
+| **Vercel** | `vercel --prod` (set `Output Directory` to `dist`) |
+| **GitHub Pages** | push `dist/` contents to the `gh-pages` branch |
+| **Nginx / Apache** | copy `dist/` to your web root and configure rewrites to `index.html` for SPA routing |
+
+> **Note:** Because the app uses client-side (hash-based) routing, no special server-side rewrite rules are required when using `HashRouter`.
